@@ -6,36 +6,46 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <time.h>
+#include <stdbool.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #define DEFAULT_PORT 8080
+#define BUFFERSIZE 1024
 
 void *connection_handler(void *socket){
     int client_socket = *(int*)socket;
     free(socket); // Free memory allocated for socket descriptor
-    char buffer[1024] = {0}; // Buffer for incoming messages
+    char buffer[BUFFERSIZE] = {0}; // Buffer for incoming messages
+
+    char* rest = buffer;
+    char* token = 0;
 
     // Read message from client
-    int valread = read(client_socket, buffer, 1024 - 1); // RESEARCH RECV VS READ
+    int valread = read(client_socket, buffer, BUFFERSIZE-1); // RESEARCH RECV VS READ
     if (valread < 0) {
         perror("read");
         exit(EXIT_FAILURE);
     }
-    buffer[valread] = '\0'; // Null terminate string
+    buffer[BUFFERSIZE-1] = '\0'; // Null terminate string
+    token = strtok_r(rest, "\r\n", &rest); // hold request line
 
     // Print Incoming Message
     time_t now = time(NULL);
     struct tm *tm_now = localtime(&now);
     char time_str[100];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_now);
-    printf("[%s] Incoming Request: %s\n", time_str, buffer);
+    // printf("[%s] Incoming Request: %s\n", time_str, token);
 
     // Print message from client
     char method[10], protocol[10];
     char path[1024] = "public";
-    sscanf(buffer, "%s %s %s", method, path+6, protocol);
+    sscanf(token, "%s %s %s", method, path+6, protocol);
 
+    /*
+        Note: still needs to handle the case of "/"
+    */
     if (strncmp(method, "GET", 3) == 0) {
-
         FILE *file = fopen(path, "rb"); // opens file in binary mode to avoid problems with text files
         if (file == NULL) {
             const char *notFoundMessage = "HTTP/1.1 404 Not Found\r\n\r\n";
@@ -58,16 +68,65 @@ void *connection_handler(void *socket){
             free(data);
         }
     } else if (strncmp(method, "POST", 4) == 0) {
+        /*
+            Note: this still doesn't handle the case where a key and value pair in the header is larger than the buffer size
+            but neglict for now and look into later
+        */
+
+        // FILE* file = fopen(path, "wb");
+        while(1){
+            token = strtok_r(rest, "\r\n", &rest);
+            // printf("\n\nrest start\n\n%d\n\nend\n\n", rest[0]);
+            if(token == NULL || rest[0] == 0){
+                // read next chunk
+                // check first if next chunk exits as not to block
+                if(token == NULL){
+                    printf("token is null\n");
+                    break;
+                }else{
+                    int rest_len = strlen(token);
+                    memcpy(buffer, token, rest_len);
+                    valread = recv(client_socket, buffer+rest_len, BUFFERSIZE-1-rest_len, MSG_DONTWAIT);
+                    if (valread == -1) {
+                        if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                            printf("The operation would block.\n");
+                            break;
+                        } else {
+                            perror("Error reading from file");  //// handle error
+                            close(client_socket);
+                            return NULL;
+                        }
+                    } else {
+                        buffer[rest_len+valread] = '\0';
+                        rest = buffer;
+                    }
+                }
+            }else{
+                // check if one of the required headers
+                // if empty means next we are reading the body
+                if(strncmp(token, "Content-Length", 14) == 0){
+                    /// write to file
+                }else if(strncmp(token, "Content-Type", 12) == 0){
+                    /// write to file
+                }else if(strncmp(token, "Content-Encoding", 16) == 0){
+                    /// write to file
+                }
+            }
+        }
+
+        /*
+            DON't FORGET TO WRITE \r\n AFTER THE 3 HEADER LINES TO NOTE THE START OF THE FILE
+            but then in the get we need to check wether those header lines exist or not
+            if exist just add them to the header part
+            if not then just put the file in the body and care no more
+            here you could finally start writing the body of the request into the file
+        */
+
         const char *okMessage = "HTTP/1.1 200 OK\r\n\r\n";
         send(client_socket, okMessage, strlen(okMessage), 0);
 
-        char fileBuffer[2048];  // Buffer for file content
-        int fileValRead = read(client_socket, fileBuffer, 2048 - 1);
-        if (fileValRead < 0) {
-            perror("read");
-            exit(EXIT_FAILURE);
-        }
-        fileBuffer[fileValRead] = '\0'; // Null terminate string
+        
+        // fileBuffer[fileValRead] = '\0'; // Null terminate string
 
     } else {
         const char *notImplementedMessage = "HTTP/1.1 501 Not Implemented\r\n\r\n";
