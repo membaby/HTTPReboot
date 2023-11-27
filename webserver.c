@@ -13,6 +13,15 @@
 #define DEFAULT_PORT 8080
 #define BUFFERSIZE 1024
 
+
+// need to look into the difference between writing n blocks of size 1
+// and writing 1 block of size n
+void write_token_to_file(char* token, char* rest, FILE* file){
+    token[(rest-token)-1] = '\r';
+    fwrite(token, (rest-token)+1, 1, file);
+    token[(rest-token)-1] = '\0';
+}
+
 void *connection_handler(void *socket){
     int client_socket = *(int*)socket;
     free(socket); // Free memory allocated for socket descriptor
@@ -73,7 +82,7 @@ void *connection_handler(void *socket){
             but neglict for now and look into later
         */
 
-        // FILE* file = fopen(path, "wb");
+        FILE* file = fopen(path, "wb");
         while(1){
             token = strtok_r(rest, "\r\n", &rest);
             // printf("\n\nrest start\n\n%d\n\nend\n\n", rest[0]);
@@ -84,7 +93,11 @@ void *connection_handler(void *socket){
                     printf("token is null\n");
                     break;
                 }else{
-                    int rest_len = strlen(token);
+                    /// could be modified to (BUFFERSIZE - (rest - input)) but this doesn't the cover where the buffer isn't full and might cause problems with garbage
+                    /// so you could look into it later
+                    /// but this even happen? like we entered here because the buffer wasn't big enough and we are at the end of it
+                    /// but still i am not too sure of it so let's just leave it this for now capito?
+                    int rest_len = strlen(token);  
                     memcpy(buffer, token, rest_len);
                     valread = recv(client_socket, buffer+rest_len, BUFFERSIZE-1-rest_len, MSG_DONTWAIT);
                     if (valread == -1) {
@@ -104,15 +117,18 @@ void *connection_handler(void *socket){
             }else{
                 // check if one of the required headers
                 // if empty means next we are reading the body
-                if(strncmp(token, "Content-Length", 14) == 0){
-                    /// write to file
-                }else if(strncmp(token, "Content-Type", 12) == 0){
-                    /// write to file
-                }else if(strncmp(token, "Content-Encoding", 16) == 0){
-                    /// write to file
+                if((strncmp(token, "Content-Length", 14) == 0) 
+                    || (strncmp(token, "Content-Type", 12) == 0) 
+                    || (strncmp(token, "Content-Type", 12) == 0)){
+                        write_token_to_file(token, rest, file);
                 }
             }
         }
+
+        fwrite("\r\n", 2, 1, file);
+        
+
+        fclose(file);
 
         /*
             DON't FORGET TO WRITE \r\n AFTER THE 3 HEADER LINES TO NOTE THE START OF THE FILE
