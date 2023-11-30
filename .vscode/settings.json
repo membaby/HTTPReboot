@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "*.nasm": "nasm",
+        "*.asm": "asm-collection",
+        "type_traits": "c"
+    }
+}
