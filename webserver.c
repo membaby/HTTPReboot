@@ -10,8 +10,8 @@
 #include <fcntl.h>
 #include <errno.h>
 
-#define DEFAULT_PORT 8090
-#define BUFFERSIZE 80
+#define DEFAULT_PORT 8080
+#define BUFFERSIZE 1024
 #define DELIMITER "\r\n"
 #define DELIMITER_LEN 2
 
@@ -48,7 +48,6 @@ int read_next_block(char* restrict buffer, char** rest, const size_t rest_len, c
     int valread = recv(client_socket, buffer+rest_len, BUFFERSIZE-1-rest_len, MSG_DONTWAIT);
     if (valread == -1) {
         if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            printf("The operation would block.\n");
             return 0;
         } else {
             perror("Error reading from socket");  //// handle error
@@ -70,11 +69,14 @@ void *connection_handler(void *socket){
     char* rest = buffer;
     char* token = 0;
 
+
     // Read message from client
     int valread = read(client_socket, buffer, BUFFERSIZE-1); // RESEARCH RECV VS READ
-    if (valread < 0) {
-        perror("read");
-        exit(EXIT_FAILURE);
+    // int valread = read_next_block(buffer, NULL, 0, client_socket);
+    if (valread <= 0) {
+        free(buffer);
+        close(client_socket);
+        return NULL;
     }
     buffer[BUFFERSIZE-1] = '\0'; // Null terminate string
     token = mytok(rest, DELIMITER, DELIMITER_LEN, &rest); // hold request line
@@ -84,17 +86,21 @@ void *connection_handler(void *socket){
     struct tm *tm_now = localtime(&now);
     char time_str[100];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_now);
-    // printf("[%s] Incoming Request: %s\n", time_str, token);
+    printf("[%s] Incoming Request: %s\n", time_str, token);
 
     // Print message from client
     char method[10], protocol[10];
     char path[1024] = "public";
     sscanf(token, "%s %s %s", method, path+6, protocol);
+    if (strcmp(path, "public/") == 0) {
+        strcat(path, "index.html");
+    }
 
     /*
         Note: still needs to handle the case of "/"
     */
     if (strncmp(method, "GET", 3) == 0) {
+        while(read_next_block(buffer, NULL, 0, client_socket) > 0); // read remaining message from client
         FILE *file = fopen(path, "rb"); // opens file in binary mode to avoid problems with text files
         if (file == NULL) {
             const char *notFoundMessage = "HTTP/1.1 404 Not Found\r\n\r\n";
@@ -218,10 +224,10 @@ int main(int argc, char const* argv[]){
     }
 
     // Attach socket to port 8080
-    // if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) { // RESEARCH SO_REUSEADDR
-    //     perror("setsockopt");
-    //     exit(EXIT_FAILURE);
-    // }
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) { // RESEARCH SO_REUSEADDR
+        perror("setsockopt");
+        exit(EXIT_FAILURE);
+    }
     address.sin_family = AF_INET;           // Address family: IPv4
     address.sin_addr.s_addr = INADDR_ANY;   // Accept any incoming messages
     address.sin_port = htons(DEFAULT_PORT); // Convert to network byte order
@@ -238,6 +244,8 @@ int main(int argc, char const* argv[]){
         exit(EXIT_FAILURE);
     }
     
+    printf("Listening on port %d...\n", DEFAULT_PORT);
+
     while(1) {
         // Accept incoming connection
         int *new_socket = calloc(1, sizeof(int));
