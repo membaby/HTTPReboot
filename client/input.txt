@@ -1,4 +1,1 @@
-client_post /test.txt 127.0.0.1 8080
-client_post /test.txt 127.0.0.1 8080
-client_post /test.txt 127.0.0.1 8080
-client_post /test.txt 127.0.0.1 8080
+client_post /file2.txt 127.0.0.1 8080

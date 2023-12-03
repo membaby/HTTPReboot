@@ -188,14 +188,6 @@ void handle_post_request(int sockfd, const char *path) {
     char* contentLengthStr = getContentLength(sockfd, &remainingBodyLength);
     if (remainingBodyLength <= 0) return;
     
-    char filePath[1024] = "files";
-    strcat(filePath, path);
-    FILE* file = fopen(filePath, "wb"); 
-    if (file == NULL) {
-        perror("Error opening file");
-        return;
-    }
-
     // Read remaining part of the body
     while (remainingBodyLength > 0) {
         ssize_t bytesRead = read(sockfd, buffer, (BUFFER_SIZE - 1 < remainingBodyLength) ? BUFFER_SIZE - 1 : remainingBodyLength);
