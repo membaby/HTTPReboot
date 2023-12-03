@@ -127,7 +127,7 @@ void handle_post_request(int sockfd, const char *path) {
     fclose(file);
 
     // Construct the POST request header
-    int content_length = strlen(body);
+    int content_length = fsize;
     snprintf(header, BUFFER_SIZE,
              "POST %s HTTP/1.1\r\n"
              "Host: %s\r\n"

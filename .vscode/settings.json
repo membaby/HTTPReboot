@@ -2,6 +2,9 @@
     "files.associations": {
         "*.nasm": "nasm",
         "*.asm": "asm-collection",
-        "type_traits": "c"
+        "type_traits": "c",
+        "sstream": "c",
+        "cstring": "c",
+        "random": "c"
     }
 }
