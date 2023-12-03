@@ -20,6 +20,7 @@ def make_request(host, port, method, path='/', body=None):
                 break
             response += part
         print('Received:', response.decode())
+    return response.decode()
 
 
 if __name__ == '__main__':
@@ -27,11 +28,20 @@ if __name__ == '__main__':
     port = 8080
     
     # Sending a GET request
-    make_request(host, port, 'GET', '/index.html', None)
+    # make_request(host, port, 'GET', '/index.html', None)
 
     # Sending a POST request
     # make_request(host, port, 'POST', 'file.txt', 'Hello from Python client')
 
-    # executor = concurrent.futures.ThreadPoolExecutor(max_workers=32)
-    # futures = [executor.submit(make_request) for i in range(100)]
-    # concurrent.futures.wait(futures)
+    # Sending multiple requests
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    futures = []
+    for i in range(1):
+        futures.append(executor.submit(make_request, host, port, 'GET', '/index.html', None))
+    r = None
+    for future in concurrent.futures.as_completed(futures):
+        if r is None:
+            r = future.result()
+        if r != future.result():
+            print('Results do not match')
+            break
