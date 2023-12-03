@@ -14,24 +14,28 @@ void process_commands(int sockfd);
 void handle_get_request(int sockfd, const char *path);
 void handle_post_request(int sockfd, const char *path);
 int connect_to_server(const char *host, int port);
+char* getContentLength(int sockfd, int* remainingBodyLength);
 
 int main(int argc, char *argv[]) {
+    // Check the number of arguments
     if (argc != 3) {
         fprintf(stderr, "Usage: %s server_ip port_number\n", argv[0]);
         return EXIT_FAILURE;
     }
-
     const char *server_ip = argv[1];
     int port_number = atoi(argv[2]);
-    int sockfd = connect_to_server(server_ip, port_number);
 
+    // Connect to the server (Open a TCP connection)
+    int sockfd = connect_to_server(server_ip, port_number);
     if (sockfd < 0) {
         fprintf(stderr, "Failed to connect to the server\n");
         return EXIT_FAILURE;
     }
 
+    // Process commands from the user
     process_commands(sockfd);
 
+    // Close the socket
     close(sockfd);
     return EXIT_SUCCESS;
 }
@@ -53,6 +57,8 @@ void process_commands(int sockfd) {
             continue;
         }
 
+        printf("\n\nSending Request: Method: %s, Path: %s\n", method, path);
+
         if (strcmp(method, "client_get") == 0) {
             handle_get_request(sockfd, path);
         } else if (strcmp(method, "client_post") == 0) {
@@ -65,11 +71,44 @@ void process_commands(int sockfd) {
     fclose(file);
 }
 
+char* getContentLength(int sockfd, int* remainingBodyLength) {
+    char headerBuffer[BUFFER_SIZE];
+    char* endOfHeaders;
+    int totalBytesRead = 0;
+    int contentLength = 0;
+    do {
+        ssize_t bytesRead = read(sockfd, headerBuffer + totalBytesRead, 1);  // Read one byte at a time
+        if (bytesRead <= 0) {
+            perror("Error reading from socket");
+            return "0";
+        }
+        totalBytesRead += bytesRead;
+        headerBuffer[totalBytesRead] = '\0';  // Null-terminate the string
+        endOfHeaders = strstr(headerBuffer, "\r\n\r\n");  // Look for end of headers
+    } while (endOfHeaders == NULL);
+
+    printf("%s", headerBuffer);
+
+    // Parse the content length
+    char *contentLengthStr = strstr(headerBuffer, "Content-Length:");
+    if (contentLengthStr) {
+        sscanf(contentLengthStr, "Content-Length: %d", &contentLength);
+    } else {
+        contentLengthStr = "0";
+    }
+
+    int bodyLength = totalBytesRead - (endOfHeaders + 4 - headerBuffer);  // Initial body length read along with headers
+    char *bodyStart = endOfHeaders + 4;  // Body starts after "\r\n\r\n"
+    *remainingBodyLength = contentLength - bodyLength;
+
+    return contentLengthStr;
+}
+
 
 void handle_get_request(int sockfd, const char *path) {
     char buffer[BUFFER_SIZE];
     char host[] = "localhost";
-    snprintf(buffer, sizeof(buffer), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, host);
+    snprintf(buffer, sizeof(buffer), "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", path, host);
 
     // Send the GET request
     int n = send(sockfd, buffer, strlen(buffer), 0);
@@ -79,7 +118,10 @@ void handle_get_request(int sockfd, const char *path) {
         return;
     }
 
-    // Read the response from the server
+    int remainingBodyLength = 0;
+    char* contentLengthStr = getContentLength(sockfd, &remainingBodyLength);
+    if (remainingBodyLength <= 0) return;
+    
     char filePath[1024] = "files";
     strcat(filePath, path);
     FILE* file = fopen(filePath, "wb"); 
@@ -87,23 +129,22 @@ void handle_get_request(int sockfd, const char *path) {
         perror("Error opening file");
         return;
     }
-    
-    char* body_start = NULL;
-    while (1) {
-        memset(buffer, 0, BUFFER_SIZE);  // Clear the buffer
-        ssize_t bytes_read = read(sockfd, buffer, BUFFER_SIZE - 1);
 
-        if (bytes_read <= 0) {
-            break;
+    // Read remaining part of the body
+    while (remainingBodyLength > 0) {
+        ssize_t bytesRead = read(sockfd, buffer, (BUFFER_SIZE - 1 < remainingBodyLength) ? BUFFER_SIZE - 1 : remainingBodyLength);
+
+        if (bytesRead <= 0) {
+            perror("Error reading from socket");
+            return;
         }
-        body_start = strstr(buffer, DELIMITER);
-        // Print the data received
+        buffer[bytesRead] = '\0';  // Null-terminate the string
+        remainingBodyLength -= bytesRead;
+
+        fwrite(buffer, bytesRead, 1, file);
         printf("%s", buffer);
-        if (body_start != NULL) {
-            body_start += DELIMITER_LENGTH;
-            fwrite(body_start, bytes_read - (body_start - buffer), 1, file);
-        }
     }
+
     fclose(file);
 }
 
@@ -141,19 +182,39 @@ void handle_post_request(int sockfd, const char *path) {
     if (n < 0) {
         perror("Error writing to socket");
     }
+
     char buffer[BUFFER_SIZE];
-    while (1) {
-        ssize_t bytes_read = read(sockfd, buffer, BUFFER_SIZE - 1);
-        if (bytes_read <= 0) {
-            break;
+    int remainingBodyLength = 0;
+    char* contentLengthStr = getContentLength(sockfd, &remainingBodyLength);
+    if (remainingBodyLength <= 0) return;
+    
+    char filePath[1024] = "files";
+    strcat(filePath, path);
+    FILE* file = fopen(filePath, "wb"); 
+    if (file == NULL) {
+        perror("Error opening file");
+        return;
+    }
+
+    // Read remaining part of the body
+    while (remainingBodyLength > 0) {
+        ssize_t bytesRead = read(sockfd, buffer, (BUFFER_SIZE - 1 < remainingBodyLength) ? BUFFER_SIZE - 1 : remainingBodyLength);
+
+        if (bytesRead <= 0) {
+            perror("Error reading from socket");
+            return;
         }
-        // Print the data received
+        buffer[bytesRead] = '\0';  // Null-terminate the string
+        remainingBodyLength -= bytesRead;
+
+        fwrite(buffer, bytesRead, 1, file);
         printf("%s", buffer);
     }
+
 }
 
 int connect_to_server(const char *host, int port) {
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);   // Open a TCP socket (Reliable, connection oriented)
     if (sockfd < 0) {
         perror("Cannot create socket");
         return -1;
