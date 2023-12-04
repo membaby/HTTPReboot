@@ -98,7 +98,7 @@ int main(int argc, char const* argv[]){
     }
     
     char log_message[1024];
-    sprintf(log_message, "Listening on port %d...", DEFAULT_PORT);
+    snprintf(log_message, sizeof(log_message), "Listening on port %d...", DEFAULT_PORT);
     logger(log_message);
 
     intptr_t new_socket;
@@ -136,7 +136,7 @@ int increment_connection_count() {
     int snapshot = active_connections;
     pthread_mutex_unlock(&lock);
     char log_message[1024];
-    sprintf(log_message, "Active Connections: %d (New Connection)", snapshot);
+    snprintf(log_message, sizeof(log_message), "Active Connections: %d (New Connection)", snapshot);
     logger(log_message);
     return snapshot;
 }
@@ -147,7 +147,7 @@ int decrement_connection_count(char message[]) {
     int snapshot = active_connections;
     pthread_mutex_unlock(&lock);
     char log_message[1024];
-    sprintf(log_message, "Active Connections: %d (%s)", snapshot, message);
+    snprintf(log_message, sizeof(log_message), "Active Connections: %d (%s)", snapshot, message);
     logger(log_message);
     return snapshot;
 }
@@ -227,7 +227,7 @@ void get_handler(Connection_attr* attr, const char* restrict path){
         return;
     }
     char header[1024];
-    sprintf(header, "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", st.st_size);
+    snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", st.st_size);
     send(attr->client_socket, header, strlen(header), 0);
 
     size_t total_sent = 0;

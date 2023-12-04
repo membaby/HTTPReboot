@@ -5,6 +5,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <netdb.h>
+#include <sys/stat.h>
 
 #define BUFFER_SIZE 1024
 #define DELIMITER "\r\n\r\n"
@@ -13,7 +15,7 @@
 void process_commands(int sockfd);
 void handle_get_request(int sockfd, const char *path);
 void handle_post_request(int sockfd, const char *path);
-int connect_to_server(const char *host, int port);
+int connect_to_server(const char* restrict domain, const char* restrict port);
 char* getContentLength(int sockfd, int* remainingBodyLength);
 
 int main(int argc, char *argv[]) {
@@ -22,11 +24,9 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s server_ip port_number\n", argv[0]);
         return EXIT_FAILURE;
     }
-    const char *server_ip = argv[1];
-    int port_number = atoi(argv[2]);
 
     // Connect to the server (Open a TCP connection)
-    int sockfd = connect_to_server(server_ip, port_number);
+    int sockfd = connect_to_server(argv[1], argv[2]);
     if (sockfd < 0) {
         fprintf(stderr, "Failed to connect to the server\n");
         return EXIT_FAILURE;
@@ -59,9 +59,9 @@ void process_commands(int sockfd) {
 
         printf("\n\nSending Request: Method: %s, Path: %s\n", method, path);
 
-        if (strcmp(method, "client_get") == 0) {
+        if (strncmp(method, "client_get", 10) == 0) {
             handle_get_request(sockfd, path);
-        } else if (strcmp(method, "client_post") == 0) {
+        } else if (strncmp(method, "client_post", 11) == 0) {
             handle_post_request(sockfd, path);
         } else {
             fprintf(stderr, "Unsupported method\n");
@@ -149,41 +149,48 @@ void handle_get_request(int sockfd, const char *path) {
 }
 
 void handle_post_request(int sockfd, const char *path) {
-    char header[BUFFER_SIZE];
+    char buffer[BUFFER_SIZE];
     char host[] = "localhost";
     char content_type[] = "application/x-www-form-urlencoded";
-    char filePath[1024] = "files";
-    strcat(filePath, path);
+    char filePath[1024];
+    snprintf(filePath, sizeof(filePath), "files%s", path);
     printf("%s\n", filePath);
     FILE* file = fopen(filePath, "rb");
     if (file == NULL) {
         perror("Error opening file");
         return;
     }
-    fseek(file, 0, SEEK_END);
-    long fsize = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    char *body = calloc(fsize + 1, sizeof(char));
-    fread(body, 1, fsize, file);
-    fclose(file);
-
-    // Construct the POST request header
-    int content_length = fsize;
-    snprintf(header, BUFFER_SIZE,
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        perror("Error opening file");
+        return;
+    }
+    snprintf(buffer, BUFFER_SIZE,
              "POST %s HTTP/1.1\r\n"
              "Host: %s\r\n"
              "Content-Type: %s\r\n"
-             "Content-Length: %d\r\n"
-             "\r\n"
-             "%s",
-             path, host, content_type, content_length, body);
-    // Send the POST request
-    int n = send(sockfd, header, strlen(header), 0);
-    if (n < 0) {
+             "Content-Length: %ld\r\n"
+             "\r\n",
+             path, host, content_type, st.st_size);
+    if (send(sockfd, buffer, strlen(buffer), 0) < 0) {
         perror("Error writing to socket");
+        return;
     }
+    size_t total_sent = 0;
+    int bytes_read = 0;
+    while(total_sent < st.st_size){
+        bytes_read = fread(buffer, 1, BUFFER_SIZE-1, file);
+        if(bytes_read == 0)
+            break;
+        if (send(sockfd, buffer, bytes_read, 0) < 0) {
+            perror("Error writing to socket");
+            return;
+        }
+        total_sent += bytes_read;
+    }
+    fclose(file);
 
-    char buffer[BUFFER_SIZE];
+    // Construct the POST request header
     int remainingBodyLength = 0;
     char* contentLengthStr = getContentLength(sockfd, &remainingBodyLength);
     if (remainingBodyLength <= 0) return;
@@ -191,7 +198,6 @@ void handle_post_request(int sockfd, const char *path) {
     // Read remaining part of the body
     while (remainingBodyLength > 0) {
         ssize_t bytesRead = read(sockfd, buffer, (BUFFER_SIZE - 1 < remainingBodyLength) ? BUFFER_SIZE - 1 : remainingBodyLength);
-
         if (bytesRead <= 0) {
             perror("Error reading from socket");
             return;
@@ -205,27 +211,43 @@ void handle_post_request(int sockfd, const char *path) {
 
 }
 
-int connect_to_server(const char *host, int port) {
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);   // Open a TCP socket (Reliable, connection oriented)
-    if (sockfd < 0) {
-        perror("Cannot create socket");
-        return -1;
+int connect_to_server(const char* restrict domain, const char* restrict port) {
+    // Step 1: Get address information for the domain
+    struct addrinfo hints, *result, *rp;
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_family = AF_UNSPEC;    // Allow IPv4 or IPv6
+    hints.ai_socktype = SOCK_STREAM; // Stream socket (TCP)
+    
+    int status = getaddrinfo(domain, port, &hints, &result);
+    if (status != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
+        exit(EXIT_FAILURE);
     }
 
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
+    // Step 2: Iterate through the available addresses and connect
+    int sockfd = -1;
+    for (rp = result; rp != NULL; rp = rp->ai_next) {
+        sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (sockfd == -1) {
+            perror("socket");
+            continue;
+        }
 
-    if (inet_pton(AF_INET, host, &server_addr.sin_addr) <= 0) {
-        perror("Invalid address/ Address not supported");
-        return -1;
+        if (connect(sockfd, rp->ai_addr, rp->ai_addrlen) != -1) {
+            break; // Connected successfully
+        }
+
+        close(sockfd); // Close the socket and try the next address
     }
 
-    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Connection Failed");
-        return -1;
+    freeaddrinfo(result); // Free the address information
+
+    if (rp == NULL) {
+        fprintf(stderr, "Failed to connect to the domain\n");
+        exit(EXIT_FAILURE);
     }
+
+    printf("Connected to the domain successfully!\n");
 
     return sockfd;
 }
