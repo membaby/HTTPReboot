@@ -12,6 +12,9 @@
 #include <sys/select.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <signal.h>
+#include <sys/poll.h>
+#include <sys/eventfd.h>
 
 
 #define DEFAULT_PORT 8080
@@ -63,8 +66,21 @@ void logger(const char* restrict message);
 struct timeval calculate_timeout();
 
 
+int shutdown_requested_fd = 0;
+void handle_shutdown(){
+    uint64_t u = 1;
+    write(shutdown_requested_fd, &u, sizeof(uint64_t));
+}
+
+
 int main(int argc, char const* argv[]){    
-    srand(time(NULL));
+    signal(SIGINT, handle_shutdown);
+    signal(SIGPIPE, SIG_IGN);
+    shutdown_requested_fd = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
+    if (shutdown_requested_fd == -1) {
+        perror("eventfd");
+        exit(EXIT_FAILURE);
+    }
     int server_fd;    // File descriptors for server and client sockets
     struct sockaddr_in address;   // Address structure for IPv4
     int opt = 1;                  // Option value for setsockopt
@@ -96,35 +112,59 @@ int main(int argc, char const* argv[]){
         perror("listen");
         exit(EXIT_FAILURE);
     }
+
+    struct timeval tv = {.tv_sec=5, .tv_sec=0};
+    setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&(tv), sizeof(tv));
     
     char log_message[1024];
     snprintf(log_message, sizeof(log_message), "Listening on port %d...", DEFAULT_PORT);
     logger(log_message);
 
     intptr_t new_socket;
+    struct pollfd fds[2];
+    fds[0].fd = server_fd;
+    fds[0].events = POLLIN;
+    fds[1].fd = shutdown_requested_fd;
+    fds[1].events = POLLIN;
+    int activity;
     while(1) {
         // Accept incoming connection
-        if ((new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
-            perror("accept");
-            continue;
+        activity = poll(fds, 2, -1);
+        if (activity < 0) {
+            perror("poll");
+            break;  // Handle error and exit the loop
         }
-        logger("New Connection Incoming");
-        if (active_connections >= MAX_CONNECTIONS) {
-            handle_server_overload(new_socket);
-            close(new_socket);
-            logger("Closed new connection due to server overload");
-            continue;
-        }
+        if (fds[0].revents & POLLIN) {
+            if ((new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
+                perror("accept");
+                continue;
+            }
+            logger("New Connection Incoming");
+            if (active_connections >= MAX_CONNECTIONS) {
+                handle_server_overload(new_socket);
+                close(new_socket);
+                logger("Closed new connection due to server overload");
+                continue;
+            }
 
-        // Create thread to handle connection
-        pthread_t thread_id;
-        if (pthread_create(&thread_id, NULL, connection_handler, (void*)new_socket) < 0) {
-            perror("pthread_create");
-            continue;
+            // Create thread to handle connection
+            pthread_t thread_id;
+            if (pthread_create(&thread_id, NULL, connection_handler, (void*)new_socket) < 0) {
+                perror("pthread_create");
+                continue;
+            }
+
+            pthread_detach(thread_id);
         }
-        pthread_detach(thread_id);
+        
+        if (fds[1].revents & POLLIN) {
+            // Read from the eventfd to clear the event
+            uint64_t u;
+            read(shutdown_requested_fd, &u, sizeof(uint64_t));
+            break;
+        }
     }
-
+    close(shutdown_requested_fd);
     close(server_fd);
 
     exit(EXIT_SUCCESS);
@@ -232,11 +272,12 @@ void get_handler(Connection_attr* attr, const char* restrict path){
 
     size_t total_sent = 0;
     int bytes_read = 0;
+    char buffer[BUFFER_SIZE];
     while(total_sent < st.st_size){
-        bytes_read = fread(attr->buffer, 1, BUFFER_SIZE-1, file);
+        bytes_read = fread(buffer, 1, BUFFER_SIZE-1, file);
         if(bytes_read == 0)
             break;
-        send(attr->client_socket, attr->buffer, bytes_read, 0);
+        send(attr->client_socket, buffer, bytes_read, 0);
         total_sent += bytes_read;
     }
     fclose(file);
@@ -400,6 +441,7 @@ void *connection_handler(void *arg){
         } else {
             handle_invalid_request(attr->client_socket);
         }
+        printf("\n=============\nbuffer %.*s\n----------\n", attr->valread, attr->buffer);
     }while(((attr->valread > 0) || (attr->keep_alive)) && (errno != EWOULDBLOCK));
 
     decrement_connection_count((errno == EWOULDBLOCK)? TIMEOUT_MSG : CONNECTION_CLOSED_MSG);
