@@ -5,6 +5,10 @@
         "type_traits": "c",
         "sstream": "c",
         "cstring": "c",
-        "random": "c"
+        "random": "c",
+        "*.tcc": "c",
+        "cerrno": "c",
+        "system_error": "c",
+        "core": "c"
     }
 }

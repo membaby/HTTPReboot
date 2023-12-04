@@ -10,310 +10,65 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/select.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+
 
 #define DEFAULT_PORT 8080
+#define BACKLOG 100
 #define MAX_CONNECTIONS 100000
 #define OVERLOAD_RETRY_AFTER 10
 #define MAX_TIMEOUT 30.0
 #define BUFFER_SIZE 1024
 #define DELIMITER "\r\n"
 #define DELIMITER_LEN 2
+#define TIMEOUT_MSG "Timeout"
+#define CONNECTION_CLOSED_MSG "Connection Closed"
+#define min(a,b) \
+    ({  __typeof__ (a) _a = (a); \
+        __typeof__ (b) _b = (b); \
+        _a * (_a<_b) + _b * (_b<=_a); })
+
+#define max(a,b) \
+    ({  __typeof__ (a) _a = (a); \
+        __typeof__ (b) _b = (b); \
+        _a * (_a>_b) + _b * (_b>=_a); })
+
 
 int active_connections = 0;
 pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
+typedef struct Connection_attr{
+    char buffer[BUFFER_SIZE];
+    char* rest;
+    char* token;
+    bool keep_alive;
+    size_t body_length;
+    int rest_len;
+    struct timeval tv;
+    int client_socket;
+    int valread;
+}Connection_attr;
+
 void *connection_handler(void *socket_desc);
-void handle_get_request(int client_socket, const char *path, char* buffer);
-void handle_post_request(int client_socket, const char *path, char* buffer, char* rest, char* token, int valread);
+void get_handler(Connection_attr* restrict attr, const char* restrict path);
 void handle_invalid_request(int client_socket);
 void handle_server_overload(int client_socket);
-int read_next_block(char* restrict buffer, char** rest, const size_t rest_len, const int client_socket);
+size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, const int client_socket);
 char* mytok(char* restrict str, const char* restrict delimiter, const size_t delimiter_len, char** rest);
 void write_token_to_file(char* restrict token, const char* restrict rest, FILE* restrict file);
 int increment_connection_count();
-int decrement_connection_count(char message[64]);
+int decrement_connection_count(char message[]);
 void logger(const char* restrict message);
 struct timeval calculate_timeout();
 
-// need to look into the difference between writing n blocks of size 1
-// and writing 1 block of size n
-void write_token_to_file(char* restrict token, const char* restrict rest, FILE* restrict file){
-    token[(rest-token)-2] = '\r';
-    token[(rest-token)-1] = '\n';
-    fwrite(token, (rest-token), 1, file);
-    token[(rest-token)-2] = '\0';
-    token[(rest-token)-1] = '\0';
-}
-
-char* mytok(char* restrict str, const char* restrict delimiter, const size_t delimiter_len, char** rest){
-    char* token = str;
-    char* end = strstr(str, delimiter);
-    if(end == NULL){
-        return NULL;
-    }
-    for(int i=0;i<delimiter_len;i++)
-        end[i] = '\0';
-    *rest = end + 2;
-    return token;
-}
-
-int read_next_block(char* restrict buffer, char** rest, const size_t rest_len, const int client_socket){
-    /// could be modified to (BUFFER_SIZE - (rest - input)) but this doesn't the cover where the buffer isn't full and might cause problems with garbage
-    /// so you could look into it later
-    /// but this even happen? like we entered here because the buffer wasn't big enough and we are at the end of it
-    /// but still i am not too sure of it so let's just leave it this for now capito?
-
-    int valread = recv(client_socket, buffer+rest_len, BUFFER_SIZE-1-rest_len, MSG_DONTWAIT);
-    if (valread == -1) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) {
-            return 0;
-        } else {
-            perror("Error reading from socket");  //// handle error
-            return -1;
-        }
-    } else {
-        buffer[rest_len+valread] = '\0';
-        if(rest != NULL)
-            *rest = buffer;
-    }
-    return valread+rest_len;
-}
-
-void handle_get_request(int client_socket, const char *path, char* buffer) {
-    while(read_next_block(buffer, NULL, 0, client_socket) > 0); // read remaining message from client
-    FILE *file = fopen(path, "rb"); // opens file in binary mode to avoid problems with text files
-    if (file == NULL) {
-        const char *notFoundMessage = "HTTP/1.1 404 Not Found\r\n\r\n";
-        send(client_socket, notFoundMessage, strlen(notFoundMessage), 0);
-    } else {
-        // Read file content
-        fseek(file, 0, SEEK_END);
-        long fsize = ftell(file);
-        fseek(file, 0, SEEK_SET);
-        char *data = calloc(fsize + 1, sizeof(char));
-        fread(data, 1, fsize, file);
-        fclose(file);
-        data[fsize] = 0;
-
-        // Send file content to client
-        char header[1024];
-        sprintf(header, "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", fsize);
-        send(client_socket, header, strlen(header), 0);
-        send(client_socket, data, fsize, 0);       // RESEARCH SENDING 1 VS SENDING 2 MESSAGES
-        free(data);
-    }
-}
-
-void handle_post_request(int client_socket, const char *path, char* buffer, char* rest, char* token, int valread) {
-    /*
-        Note: this still doesn't handle the case where a key and value pair in the header is larger than the buffer size
-        but neglict for now and look into later
-    */
-
-    FILE* file = fopen(path, "wb");
-    size_t body_length = -1;
-    size_t rest_len = 0;
-    short null_count = 0;
-    while(1){
-        token = mytok(rest, DELIMITER, DELIMITER_LEN, &rest);
-        // read next chunk
-        // check first if next chunk exits as not to block
-        if(token != NULL && token[0] == '\0'){
-            //reached \r\n\r\n
-            rest_len = valread-(rest-buffer);
-            break;
-        }
-        if(token == NULL){
-            rest_len = valread-(rest-buffer);
-            memmove(buffer, rest, rest_len);
-            valread = read_next_block(buffer, &rest, rest_len, client_socket);
-            if(valread == 0){
-                memmove(buffer, rest, rest_len);
-                break;
-            }else if(valread == -1){
-                close(client_socket);
-                free(buffer);
-                return;
-            }
-            continue;
-        }
-    }
-
-    memmove(buffer, rest, rest_len);
-
-    size_t total_read = 0, curr_read = rest_len;
-    while(total_read <= body_length){
-        fwrite(buffer, curr_read, 1, file);
-        total_read += curr_read;
-        curr_read = read_next_block(buffer, NULL, 0, client_socket);
-        if(curr_read == 0){
-            break;
-        }else if(curr_read == -1){
-            close(client_socket);
-            free(buffer);
-            return;
-        }
-    }
-
-    fclose(file);
-
-    /*
-        DON't FORGET TO WRITE \r\n AFTER THE 3 HEADER LINES TO NOTE THE START OF THE FILE
-        but then in the get we need to check wether those header lines exist or not
-        if exist just add them to the header part
-        if not then just put the file in the body and care no more
-        here you could finally start writing the body of the request into the file
-    */
-
-    const char *okMessage = "HTTP/1.1 200 OK\r\n\r\n";
-    send(client_socket, okMessage, strlen(okMessage), 0);
-}
-
-void handle_invalid_request(int client_socket) {
-    const char *badRequestMessage = "HTTP/1.1 400 Bad Request\r\n\r\n";
-    send(client_socket, badRequestMessage, strlen(badRequestMessage), 0);
-}
-
-void handle_server_overload(int client_socket) {
-    char responseMessage[256];
-    
-    // Build the HTTP response string.
-    snprintf(responseMessage, sizeof(responseMessage),
-             "HTTP/1.1 503 Service Unavailable\r\n"
-             "Retry-After: %d\r\n"
-             "Content-Type: text/html\r\n"
-             "\r\n"
-             "<html><body><h1>503 Service Unavailable</h1></body></html>\r\n",
-             OVERLOAD_RETRY_AFTER);
-
-    // Send the custom error message over the client's socket.
-    send(client_socket, responseMessage, strlen(responseMessage), 0);
-}
-
-void logger(const char* restrict message){
-    FILE* file = fopen("log.txt", "a");
-    if(file == NULL){
-        perror("Error opening log file");
-        return;
-    }
-    time_t now = time(NULL);
-    struct tm *tm_now = localtime(&now);
-    char time_str[100];
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_now);
-    fprintf(file, "[%s] %s\n", time_str, message);
-    printf("[%s] %s\n", time_str, message);
-    fclose(file);
-}
-
-struct timeval calculate_timeout() {
-    struct timeval tv;
-    pthread_mutex_lock(&lock);
-    tv.tv_sec = MAX_TIMEOUT - (MAX_TIMEOUT / MAX_CONNECTIONS) * active_connections + 1;
-    pthread_mutex_unlock(&lock);
-    tv.tv_usec = 0;
-    return tv;
-}
-
-void *connection_handler(void *socket_desc){
-    int client_socket = *(int*)socket_desc;
-    free(socket_desc);
-    int snapshot = increment_connection_count();
-    if (snapshot >= MAX_CONNECTIONS) {
-        handle_server_overload(client_socket);
-        decrement_connection_count("ERR503 - Server Overload");
-        close(client_socket);
-        return NULL;
-    }
-    int activity;
-    while (1) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(client_socket, &read_fds);
-        struct timeval tv = calculate_timeout(); // dynamic timeout based on load
-        activity = select(client_socket + 1, &read_fds, NULL, NULL, &tv);
-        if ((activity < 0) && (errno != EINTR)) {
-            perror("select error");
-            continue;
-        }
-        if (activity == 0) {
-            break;
-        }
-        if (FD_ISSET(client_socket, &read_fds)) {
-            char* buffer = calloc(BUFFER_SIZE, sizeof(char)); // Buffer for incoming messages
-            if (!buffer) {
-                perror("calloc");
-                continue;
-            }
-            char* rest = buffer;
-            char* token = 0;
-
-            // Read message from client
-            int valread = read(client_socket, buffer, BUFFER_SIZE-1); // RESEARCH RECV VS READ
-            if (valread <= 0) {
-                // If read error or client closed connection, break the loop
-                free(buffer);
-                continue;
-            }
-            buffer[BUFFER_SIZE-1] = '\0';
-            token = mytok(rest, DELIMITER, DELIMITER_LEN, &rest); // hold request line
-
-            char log_message[1024];
-            sprintf(log_message, "Incoming Request: %s", token);
-            logger(log_message);
-
-            // Print message from client
-            char method[10], protocol[10];
-            char path[1024] = "public";
-            sscanf(token, "%s %s %s", method, path+6, protocol);
-
-            // Special Case: If path is "/", return index.html
-            if (strcmp(path, "public/") == 0) {
-                strcat(path, "index.html");
-            }
-
-            if (strncmp(method, "GET", 3) == 0) {
-                handle_get_request(client_socket, path, buffer);
-            } else if (strncmp(method, "POST", 4) == 0) {
-                handle_post_request(client_socket, path, buffer, rest, token, valread);
-            } else {
-                handle_invalid_request(client_socket);
-            }
-            free(buffer);
-        }
-    }
-    decrement_connection_count(activity == 0 ? "Timeout" : "Connection Closed");
-    close(client_socket);
-    return NULL;
-}
-
-int increment_connection_count() {
-    pthread_mutex_lock(&lock);
-    active_connections++;
-    int snapshot = active_connections;
-    pthread_mutex_unlock(&lock);
-    char log_message[1024];
-    sprintf(log_message, "Active Connections: %d (New Connection)", snapshot);
-    logger(log_message);
-    return snapshot;
-}
-
-int decrement_connection_count(char message[64]) {
-    pthread_mutex_lock(&lock);
-    active_connections--;
-    int snapshot = active_connections;
-    pthread_mutex_unlock(&lock);
-    char log_message[1024];
-    sprintf(log_message, "Active Connections: %d (%s)", snapshot, message);
-    logger(log_message);
-    return snapshot;
-}
 
 int main(int argc, char const* argv[]){    
+    srand(time(NULL));
     int server_fd;    // File descriptors for server and client sockets
     struct sockaddr_in address;   // Address structure for IPv4
     int opt = 1;                  // Option value for setsockopt
     int addrlen = sizeof(address);
-    char buffer[1024] = {0};      // Buffer for incoming messages
 
     // Create socket file descriptor
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
@@ -337,7 +92,7 @@ int main(int argc, char const* argv[]){
     }
     
     // Listen for incoming connections
-    if (listen(server_fd, 3) < 0) {     // RESEARCH BACKLOG - WHAT IS THE BEST VALUE?
+    if (listen(server_fd, BACKLOG) < 0) {     // RESEARCH BACKLOG - WHAT IS THE BEST VALUE?
         perror("listen");
         exit(EXIT_FAILURE);
     }
@@ -346,12 +101,18 @@ int main(int argc, char const* argv[]){
     sprintf(log_message, "Listening on port %d...", DEFAULT_PORT);
     logger(log_message);
 
+    intptr_t new_socket;
     while(1) {
         // Accept incoming connection
-        int *new_socket = calloc(1, sizeof(int));
-        if ((*new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
+        if ((new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
             perror("accept");
-            free(new_socket);
+            continue;
+        }
+        logger("New Connection Incoming");
+        if (active_connections >= MAX_CONNECTIONS) {
+            handle_server_overload(new_socket);
+            close(new_socket);
+            logger("Closed new connection due to server overload");
             continue;
         }
 
@@ -359,12 +120,293 @@ int main(int argc, char const* argv[]){
         pthread_t thread_id;
         if (pthread_create(&thread_id, NULL, connection_handler, (void*)new_socket) < 0) {
             perror("pthread_create");
-            free(new_socket);
             continue;
         }
+        pthread_detach(thread_id);
     }
 
     close(server_fd);
 
-    return 0;   
+    exit(EXIT_SUCCESS);
 }  
+
+int increment_connection_count() {
+    pthread_mutex_lock(&lock);
+    active_connections++;
+    int snapshot = active_connections;
+    pthread_mutex_unlock(&lock);
+    char log_message[1024];
+    sprintf(log_message, "Active Connections: %d (New Connection)", snapshot);
+    logger(log_message);
+    return snapshot;
+}
+
+int decrement_connection_count(char message[]) {
+    pthread_mutex_lock(&lock);
+    active_connections--;
+    int snapshot = active_connections;
+    pthread_mutex_unlock(&lock);
+    char log_message[1024];
+    sprintf(log_message, "Active Connections: %d (%s)", snapshot, message);
+    logger(log_message);
+    return snapshot;
+}
+
+// need to look into the difference between writing n blocks of size 1
+// and writing 1 block of size n
+void write_token_to_file(char* restrict token, const char* restrict rest, FILE* restrict file){
+    token[(rest-token)-2] = '\r';
+    token[(rest-token)-1] = '\n';
+    fwrite(token, (rest-token), 1, file);
+    token[(rest-token)-2] = '\0';
+    token[(rest-token)-1] = '\0';
+}
+
+char* mytok(char* restrict str, const char* restrict delimiter, const size_t delimiter_len, char** rest){
+    char* token = str;
+    char* end = strstr(str, delimiter);
+    if(end == NULL){
+        return NULL;
+    }
+    for(int i=0;i<delimiter_len;i++)
+        end[i] = '\0';
+    *rest = end + delimiter_len;
+    return token;
+}
+
+void logger(const char* restrict message){
+    FILE* file = fopen("log.txt", "a");
+    if(file == NULL){
+        perror("Error opening log file");
+        return;
+    }
+    time_t now = time(NULL);
+    struct tm *tm_now = localtime(&now);
+    char time_str[100];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_now);
+    fprintf(file, "[%s] %s  --  Connection ID: %ld\n", time_str, message, pthread_self());
+    printf("[%s] %s  --  Connection ID: %ld\n", time_str, message, pthread_self());
+    fclose(file);
+}
+
+struct timeval calculate_timeout() {
+    struct timeval tv;
+    pthread_mutex_lock(&lock);
+    tv.tv_sec = MAX_TIMEOUT - (MAX_TIMEOUT / MAX_CONNECTIONS) * active_connections + 1;
+    pthread_mutex_unlock(&lock);
+    tv.tv_usec = 0;
+    return tv;
+}
+
+
+size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, const int client_socket){
+
+    int curr_read = recv(client_socket, buffer+rest_len, BUFFER_SIZE-1-rest_len, 0);
+    if (curr_read <= -1) {
+        perror("timedout reading from socket");
+        return -1;
+    } else {
+        buffer[rest_len+curr_read] = '\0';
+        if(rest != NULL)
+            *rest = buffer;
+    }
+    return curr_read+rest_len;
+}
+
+
+void get_handler(Connection_attr* attr, const char* restrict path){
+    FILE *file = fopen(path, "rb"); // opens file in binary mode to avoid problems with text files
+    if (file == NULL) {
+        send(attr->client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
+        return;
+    }
+    // Read file content
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        send(attr->client_socket, "HTTP/1.1 505 Internal Server Error\r\n\r\n", 38, 0);
+        return;
+    }
+    char header[1024];
+    sprintf(header, "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", st.st_size);
+    send(attr->client_socket, header, strlen(header), 0);
+
+    size_t total_sent = 0;
+    int bytes_read = 0;
+    while(total_sent < st.st_size){
+        bytes_read = fread(attr->buffer, 1, BUFFER_SIZE-1, file);
+        if(bytes_read == 0)
+            break;
+        send(attr->client_socket, attr->buffer, bytes_read, 0);
+        total_sent += bytes_read;
+    }
+    fclose(file);
+}
+
+size_t handle_body(Connection_attr* attr, const char* restrict path, const bool write){
+    // fwrite("\r\n", 2, 1, file);
+    // memmove(buffer, rest, rest_len);
+    FILE* file;
+    if(write)
+        file = fopen(path, "wb");
+    size_t total_read = min(attr->body_length, attr->rest_len);
+    int curr_read = attr->rest_len;
+    if(write)
+        fwrite(attr->buffer, total_read, 1, file);
+    while(total_read < attr->body_length){
+        curr_read = read_next_block(attr->buffer, NULL, 0, attr->client_socket);
+        if(curr_read <= 0)
+            return -1;
+            // close(attr->client_socket);
+            // free(buffer);
+        if(write)
+            fwrite(attr->buffer, min(attr->body_length-total_read, curr_read), 1, file);
+        if((curr_read == 0) || ((total_read+curr_read) >= attr->body_length)){
+            break;
+        }
+        total_read += curr_read;
+    }
+    if(write)
+        fclose(file);
+    
+    const size_t body_left = (curr_read<attr->body_length)?(min(attr->body_length-total_read, curr_read)):attr->body_length; 
+    attr->rest_len = curr_read-body_left;
+    memmove(attr->buffer, (attr->buffer)+body_left, attr->rest_len);
+    memset((attr->buffer)+(curr_read-body_left), 0, attr->rest_len);
+    // attr->rest = (char*)((attr->buffer)+body_left);
+    attr->valread = attr->rest_len;
+
+    
+    return total_read+min(attr->body_length-total_read, curr_read);
+}
+
+
+/// should put all of those into a struct
+int handle_request_and_headers(Connection_attr* attr, char* restrict method, char* restrict path, char* restrict protocol){
+    while(1){
+        attr->token = mytok(attr->rest, DELIMITER, DELIMITER_LEN, &attr->rest);
+        // read next chunk
+        // check first if next chunk exits as not to block
+        if(attr->token != NULL && attr->token[0] == '\0'){
+            //reached \r\n\r\n
+            attr->rest_len = attr->valread-(attr->rest-attr->buffer);
+            memmove(attr->buffer, attr->rest, attr->rest_len);
+            break;
+        }
+        if(attr->token == NULL){
+            attr->rest_len = (attr->valread)-(attr->rest-attr->buffer);
+            memmove(attr->buffer, attr->rest, attr->rest_len);
+            attr->valread = read_next_block(attr->buffer, &attr->rest, attr->rest_len, attr->client_socket);
+            if((attr->valread) <= -1)
+                return -1;
+
+            continue;
+        }
+        if(strncmp(attr->token, "Content-Length:", 15) == 0){
+            attr->body_length = atoll(attr->token+16);
+            // write_token_to_file(token, rest, file);
+        }else if(strncmp(attr->token, "Connection:", 11) == 0){
+            if(strncmp(attr->token+12, "keep-alive", 10) == 0){
+                attr->keep_alive = true;
+            }
+        }else if((strncmp(attr->token, "GET", 3) == 0)){
+            logger(attr->token);
+            sscanf(attr->token, "%s %s %s", method, path+6, protocol);
+            if (strcmp(path+6, "/") == 0) {
+                memmove(path+7, "index.html", 10);
+            }
+        }else if((strncmp(attr->token, "POST", 4) == 0)){
+            sscanf(attr->token, "%s %s %s", method, path+6, protocol);
+            logger(attr->token);
+            if (strcmp(path+6, "/") == 0) {
+                send(attr->client_socket, "HTTP/1.1 403 Forbidden\r\n\r\n", 26, 0);
+            }
+        }
+    }
+    return 1;
+}
+
+
+
+void handle_invalid_request(int client_socket) {
+    const char *badRequestMessage = "HTTP/1.1 400 Bad Request\r\n\r\n";
+    send(client_socket, badRequestMessage, strlen(badRequestMessage), 0);
+}
+
+void handle_server_overload(int client_socket) {
+    char responseMessage[256];
+    
+    // Build the HTTP response string.
+    snprintf(responseMessage, sizeof(responseMessage),
+             "HTTP/1.1 503 Service Unavailable\r\n"
+             "Retry-After: %d\r\n"
+             "Content-Type: text/html\r\n"
+             "\r\n"
+             "<html><body><h1>503 Service Unavailable</h1></body></html>\r\n",
+             OVERLOAD_RETRY_AFTER);
+
+    // Send the custom error message over the client's socket.
+    send(client_socket, responseMessage, strlen(responseMessage), 0);
+}
+
+
+
+void *connection_handler(void *arg){
+    increment_connection_count();
+    Connection_attr* attr = (Connection_attr*)calloc(1, sizeof(Connection_attr));
+    attr->client_socket = (int)((intptr_t)arg);
+    attr->keep_alive = false;
+    char method[10], protocol[10];
+    char path[1024] = "public";
+    
+    attr->tv.tv_sec = 5;
+    attr->tv.tv_usec = 0;
+    setsockopt(attr->client_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&(attr->tv), sizeof(attr->tv));
+
+    attr->valread = read_next_block(attr->buffer, NULL, 0, attr->client_socket);
+    if (attr->valread <= 0) {
+        decrement_connection_count((errno == EWOULDBLOCK)? TIMEOUT_MSG : CONNECTION_CLOSED_MSG);
+        close(attr->client_socket);
+        free(attr->buffer);
+        pthread_exit(NULL);
+    }
+    int ret;
+    do {
+        // logger(log_message);
+        attr->rest = attr->buffer, attr->token = 0;
+        ret = handle_request_and_headers(attr, method, path, protocol);
+        if(ret == -1 || errno == EWOULDBLOCK)
+            break;
+
+        if(attr->keep_alive){
+            attr->tv = calculate_timeout();
+            setsockopt(attr->client_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&attr->tv, sizeof (attr->tv));
+        }
+
+        if (strncmp(method, "GET", 3) == 0) {
+            get_handler(attr, path);
+            ret = handle_body(attr, path, false);
+            if(ret == -1 || errno == EWOULDBLOCK)
+                break;
+        } else if (strncmp(method, "POST", 4) == 0) {
+            size_t total_read = handle_body(attr, path, true);
+            if(total_read == -1 || errno == EWOULDBLOCK)
+                break;
+            if(total_read == attr->body_length)
+                send(attr->client_socket, "HTTP/1.1 200 OK\r\n\r\n", 19, 0);
+            else{
+                send(attr->client_socket, "HTTP/1.1 408 OK\r\n\r\n", 19, 0);
+                break;
+            }
+        } else {
+            handle_invalid_request(attr->client_socket);
+        }
+    }while(((attr->valread > 0) || (attr->keep_alive)) && (errno != EWOULDBLOCK));
+
+    decrement_connection_count((errno == EWOULDBLOCK)? TIMEOUT_MSG : CONNECTION_CLOSED_MSG);
+    close(attr->client_socket);
+    free(attr);
+    pthread_exit(NULL);
+}
+
+
+
