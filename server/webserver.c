@@ -52,19 +52,20 @@ typedef struct Connection_attr{
     struct timeval tv;
     int client_socket;
     int valread;
+    int timeout; //in millis
 }Connection_attr;
 
 void *connection_handler(void *socket_desc);
 void get_handler(Connection_attr* restrict attr, const char* restrict path);
 void handle_invalid_request(int client_socket);
 void handle_server_overload(int client_socket);
-size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, const int client_socket);
+size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, const int client_socket, int timeout);
 char* mytok(char* restrict str, const char* restrict delimiter, const size_t delimiter_len, char** rest);
 void write_token_to_file(char* restrict token, const char* restrict rest, FILE* restrict file);
 int increment_connection_count();
 int decrement_connection_count(char message[]);
 void logger(const char* restrict message);
-struct timeval calculate_timeout();
+int calculate_timeout();
 
 
 int shutdown_requested_fd = 0;
@@ -168,6 +169,8 @@ int main(int argc, char const* argv[]){
     close(shutdown_requested_fd);
     close(server_fd);
 
+    sleep(2);
+
     exit(EXIT_SUCCESS);
 }  
 
@@ -230,28 +233,46 @@ void logger(const char* restrict message){
     fclose(file);
 }
 
-struct timeval calculate_timeout() {
-    struct timeval tv;
+int calculate_timeout() {
+    int time;
     pthread_mutex_lock(&lock);
-    tv.tv_sec = MAX_TIMEOUT - (MAX_TIMEOUT / MAX_CONNECTIONS) * active_connections + 1;
+    time = MAX_TIMEOUT - (MAX_TIMEOUT / MAX_CONNECTIONS) * active_connections + 1;
     pthread_mutex_unlock(&lock);
-    tv.tv_usec = 0;
-    return tv;
+    return time;
 }
 
 
-size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, const int client_socket){
+size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, const int client_socket, const int timeout){
+    struct pollfd fds[2];
+    fds[0].fd = client_socket;
+    fds[0].events = POLLIN;
+    fds[1].fd = shutdown_requested_fd;
+    fds[1].events = POLLIN;
 
-    int curr_read = recv(client_socket, buffer+rest_len, BUFFER_SIZE-1-rest_len, 0);
-    if (curr_read <= -1) {
-        perror("timedout reading from socket");
-        return -1;
-    } else {
-        buffer[rest_len+curr_read] = '\0';
-        if(rest != NULL)
-            *rest = buffer;
+    int activity = poll(fds, 2, timeout);
+    if (activity < 0) {
+        perror("poll");
+        return -1;  // Handle error and exit the loop
     }
-    return curr_read+rest_len;
+    if (fds[0].revents & (POLLIN | POLLERR)) {
+        int curr_read = recv(client_socket, buffer+rest_len, BUFFER_SIZE-1-rest_len, 0);
+        if (curr_read <= -1) {
+            perror("timedout reading from socket");
+            return -1;
+        } else {
+            buffer[rest_len+curr_read] = '\0';
+            if(rest != NULL)
+                *rest = buffer;
+        }
+        return curr_read+rest_len;
+    }
+    
+    if (fds[1].revents & POLLIN) {
+        // Read from the eventfd to clear the event
+        return -1;
+    }
+
+    return -1;
 }
 
 
@@ -295,11 +316,9 @@ size_t handle_body(Connection_attr* attr, const char* restrict path, const bool 
     if(write)
         fwrite(attr->buffer, total_read, 1, file);
     while(total_read < attr->body_length){
-        curr_read = read_next_block(attr->buffer, NULL, 0, attr->client_socket);
+        curr_read = read_next_block(attr->buffer, NULL, 0, attr->client_socket, attr->timeout);
         if(curr_read <= 0)
             return -1;
-            // close(attr->client_socket);
-            // free(buffer);
         if(write)
             fwrite(attr->buffer, min(attr->body_length-total_read, curr_read), 1, file);
         if((curr_read == 0) || ((total_read+curr_read) >= attr->body_length)){
@@ -337,8 +356,8 @@ int handle_request_and_headers(Connection_attr* attr, char* restrict method, cha
         if(attr->token == NULL){
             attr->rest_len = (attr->valread)-(attr->rest-attr->buffer);
             memmove(attr->buffer, attr->rest, attr->rest_len);
-            attr->valread = read_next_block(attr->buffer, &attr->rest, attr->rest_len, attr->client_socket);
-            if((attr->valread) <= -1)
+            attr->valread = read_next_block(attr->buffer, &attr->rest, attr->rest_len, attr->client_socket, attr->timeout);
+            if((attr->valread) <= 0)
                 return -1;
 
             continue;
@@ -359,8 +378,8 @@ int handle_request_and_headers(Connection_attr* attr, char* restrict method, cha
         }else if((strncmp(attr->token, "POST", 4) == 0)){
             sscanf(attr->token, "%s %s %s", method, path+6, protocol);
             logger(attr->token);
-            if (strcmp(path+6, "/") == 0) {
-                send(attr->client_socket, "HTTP/1.1 403 Forbidden\r\n\r\n", 26, 0);
+            if (strncmp(path+7, "index.html", 10) == 0) {
+                memcpy(method, "Forbidden", 10);
             }
         }
     }
@@ -400,28 +419,28 @@ void *connection_handler(void *arg){
     char method[10], protocol[10];
     char path[1024] = "public";
     short req_count = 0;
-    attr->tv.tv_sec = 5;
-    attr->tv.tv_usec = 0;
-    setsockopt(attr->client_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&(attr->tv), sizeof(attr->tv));
+    attr->timeout = 5000;
+    // attr->tv.tv_sec = 5;
+    // attr->tv.tv_usec = 0;
+    // setsockopt(attr->client_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&(attr->tv), sizeof(attr->tv));
 
-    attr->valread = read_next_block(attr->buffer, NULL, 0, attr->client_socket);
+    attr->valread = read_next_block(attr->buffer, NULL, 0, attr->client_socket, attr->timeout);
     if (attr->valread <= 0) {
+        perror("valread<=0");
         decrement_connection_count((errno == EWOULDBLOCK)? TIMEOUT_MSG : CONNECTION_CLOSED_MSG);
         close(attr->client_socket);
-        free(attr->buffer);
+        free(attr);
         pthread_exit(NULL);
     }
     int ret;
     do {
-        // logger(log_message);
         attr->rest = attr->buffer, attr->token = 0;
         ret = handle_request_and_headers(attr, method, path, protocol);
         if(ret == -1 || errno == EWOULDBLOCK)
             break;
 
         if(attr->keep_alive){
-            attr->tv = calculate_timeout();
-            setsockopt(attr->client_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&attr->tv, sizeof (attr->tv));
+            attr->timeout = calculate_timeout()*1000;
         }
 
         if (strncmp(method, "GET", 3) == 0) {
@@ -429,7 +448,7 @@ void *connection_handler(void *arg){
             ret = handle_body(attr, path, false);
             if(ret == -1 || errno == EWOULDBLOCK)
                 break;
-        } else if (strncmp(method, "POST", 4) == 0) {
+        }else if(strncmp(method, "POST", 4) == 0) {
             size_t total_read = handle_body(attr, path, true);
             if(total_read == -1 || errno == EWOULDBLOCK)
                 break;
@@ -439,12 +458,19 @@ void *connection_handler(void *arg){
                 send(attr->client_socket, "HTTP/1.1 408 OK\r\n\r\n", 19, 0);
                 break;
             }
-        } else {
+        }else if(strncmp(method, "Forbidden", 9) == 0){
+            send(attr->client_socket, "HTTP/1.1 403 Forbidden\r\n\r\n", 26, 0);
+            ret = handle_body(attr, path, false);
+            if(ret == -1 || errno == EWOULDBLOCK)
+                break;
+        }else {
             handle_invalid_request(attr->client_socket);
+            ret = handle_body(attr, path, false);
+            if(ret == -1 || errno == EWOULDBLOCK)
+                break;
         }
         req_count++;
     }while(((attr->valread > 0) || (attr->keep_alive)) && (errno != EWOULDBLOCK) && (req_count<MAX_REQUESTS));
-
     decrement_connection_count((errno == EWOULDBLOCK)? TIMEOUT_MSG : CONNECTION_CLOSED_MSG);
     close(attr->client_socket);
     free(attr);
