@@ -115,8 +115,8 @@ int main(int argc, char const* argv[]){
         exit(EXIT_FAILURE);
     }
 
-    struct timeval tv = {.tv_sec=5, .tv_sec=0};
-    setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&(tv), sizeof(tv));
+    // struct timeval tv = {.tv_sec=5, .tv_usec=0};
+    // setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&(tv), sizeof(tv));
     
     char log_message[1024];
     snprintf(log_message, sizeof(log_message), "Listening on port %d...", DEFAULT_PORT);
