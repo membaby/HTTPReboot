@@ -373,7 +373,7 @@ int handle_request_and_headers(Connection_attr* attr, char* restrict method, cha
             logger(attr->token);
             sscanf(attr->token, "%s %s %s", method, path+6, protocol);
             if (strcmp(path+6, "/") == 0) {
-                memmove(path+7, "index.html", 10);
+                memcpy(path+7, "index.html", 10);
             }
         }else if((strncmp(attr->token, "POST", 4) == 0)){
             sscanf(attr->token, "%s %s %s", method, path+6, protocol);
