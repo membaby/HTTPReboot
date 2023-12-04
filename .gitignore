@@ -53,3 +53,6 @@ dkms.conf
 test.c
 test
 client/req.sh
+test.s
+testrestrict.s
+testconst.s

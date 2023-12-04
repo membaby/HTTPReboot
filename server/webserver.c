@@ -276,7 +276,7 @@ size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, c
 }
 
 
-void get_handler(Connection_attr* attr, const char* restrict path){
+void get_handler(Connection_attr* restrict attr, const char* restrict path){
     FILE *file = fopen(path, "rb"); // opens file in binary mode to avoid problems with text files
     if (file == NULL) {
         send(attr->client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
@@ -294,9 +294,9 @@ void get_handler(Connection_attr* attr, const char* restrict path){
 
     size_t total_sent = 0;
     int bytes_read = 0;
-    char buffer[BUFFER_SIZE];
+    char buffer[st.st_blksize];
     while(total_sent < st.st_size){
-        bytes_read = fread(buffer, 1, BUFFER_SIZE-1, file);
+        bytes_read = fread(buffer, 1, st.st_blksize, file);
         if(bytes_read == 0)
             break;
         send(attr->client_socket, buffer, bytes_read, 0);
