@@ -22,6 +22,7 @@
 #define MAX_CONNECTIONS 100000
 #define OVERLOAD_RETRY_AFTER 10
 #define MAX_TIMEOUT 30.0
+#define MAX_REQUESTS 30
 #define BUFFER_SIZE 1024
 #define DELIMITER "\r\n"
 #define DELIMITER_LEN 2
@@ -398,7 +399,7 @@ void *connection_handler(void *arg){
     attr->keep_alive = false;
     char method[10], protocol[10];
     char path[1024] = "public";
-    
+    short req_count = 0;
     attr->tv.tv_sec = 5;
     attr->tv.tv_usec = 0;
     setsockopt(attr->client_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&(attr->tv), sizeof(attr->tv));
@@ -441,8 +442,8 @@ void *connection_handler(void *arg){
         } else {
             handle_invalid_request(attr->client_socket);
         }
-        printf("\n=============\nbuffer %.*s\n----------\n", attr->valread, attr->buffer);
-    }while(((attr->valread > 0) || (attr->keep_alive)) && (errno != EWOULDBLOCK));
+        req_count++;
+    }while(((attr->valread > 0) || (attr->keep_alive)) && (errno != EWOULDBLOCK) && (req_count<MAX_REQUESTS));
 
     decrement_connection_count((errno == EWOULDBLOCK)? TIMEOUT_MSG : CONNECTION_CLOSED_MSG);
     close(attr->client_socket);
