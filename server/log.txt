@@ -1,0 +1,11 @@
+[2023-12-05 05:39:45] Listening on port 8080...  --  Connection ID: 78251840
+[2023-12-05 05:39:49] New Connection Incoming  --  Connection ID: 78251840
+[2023-12-05 05:39:49] Active Connections: 1 (New Connection)  --  Connection ID: 90846784
+[2023-12-05 05:39:50] GET / HTTP/1.1  --  Connection ID: 90846784
+[2023-12-05 05:39:50] GET /embo.png HTTP/1.1  --  Connection ID: 90846784
+[2023-12-05 05:39:50] New Connection Incoming  --  Connection ID: 78251840
+[2023-12-05 05:39:50] Active Connections: 2 (New Connection)  --  Connection ID: 99239488
+[2023-12-05 05:39:50] GET /heshek.png HTTP/1.1  --  Connection ID: 99239488
+[2023-12-05 05:39:50] GET /favicon.ico HTTP/1.1  --  Connection ID: 99239488
+[2023-12-05 05:39:50] Active Connections: 1 (Connection Closed)  --  Connection ID: 99239488
+[2023-12-05 05:39:55] Active Connections: 0 (Connection Closed)  --  Connection ID: 90846784

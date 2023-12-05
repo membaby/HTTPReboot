@@ -14,12 +14,11 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <sys/poll.h>
-// #include <sys/eventfd.h>
 
 
 #define DEFAULT_PORT 8080
+#define BACKLOG 100
 #define MAX_CONNECTIONS 100000
-#define BACKLOG INT32_MAX
 #define OVERLOAD_RETRY_AFTER 10
 #define MAX_TIMEOUT 30.0
 #define MAX_REQUESTS 30
@@ -68,20 +67,20 @@ void logger(const char* restrict message);
 int calculate_timeout();
 
 
-int shutdown_requested_fd = 0;
+int shutdown_pipe[2] = {-1, -1};
 void handle_shutdown(){
     uint64_t u = 1;
-    write(shutdown_requested_fd, &u, sizeof(uint64_t));
+    write(shutdown_pipe[1], &u, sizeof(uint64_t));
 }
 
+
 int main(int argc, char const* argv[]){    
-    // signal(SIGINT, handle_shutdown);
+    signal(SIGINT, handle_shutdown);
     signal(SIGPIPE, SIG_IGN);
-    // shutdown_requested_fd = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
-    // if (shutdown_requested_fd == -1) {
-    //     perror("eventfd");
-    //     exit(EXIT_FAILURE);
-    // }
+    if (pipe(shutdown_pipe) == -1) {
+        perror("pipe");
+        exit(EXIT_FAILURE);
+    }
     int server_fd;    // File descriptors for server and client sockets
     struct sockaddr_in address;   // Address structure for IPv4
     int opt = 1;                  // Option value for setsockopt
@@ -125,12 +124,12 @@ int main(int argc, char const* argv[]){
     struct pollfd fds[2];
     fds[0].fd = server_fd;
     fds[0].events = POLLIN;
-    // fds[1].fd = shutdown_requested_fd;
-    // fds[1].events = POLLIN;
+    fds[1].fd = shutdown_pipe[0];
+    fds[1].events = POLLIN;
     int activity;
     while(1) {
         // Accept incoming connection
-        activity = poll(fds, 1, -1);
+        activity = poll(fds, 2, -1);
         if (activity < 0) {
             perror("poll");
             break;  // Handle error and exit the loop
@@ -161,11 +160,12 @@ int main(int argc, char const* argv[]){
         if (fds[1].revents & POLLIN) {
             // Read from the eventfd to clear the event
             uint64_t u;
-            read(shutdown_requested_fd, &u, sizeof(uint64_t));
+            read(shutdown_pipe[0], &u, sizeof(uint64_t));
             break;
         }
     }
-    close(shutdown_requested_fd);
+    close(shutdown_pipe[0]);
+    close(shutdown_pipe[1]);
     close(server_fd);
 
     sleep(2);
@@ -227,8 +227,8 @@ void logger(const char* restrict message){
     struct tm *tm_now = localtime(&now);
     char time_str[100];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_now);
-    fprintf(file, "[%s] %s  --  Thread ID: %ld\n", time_str, message, (long)pthread_self());
-    printf("[%s] %s  --  Thread ID: %ld\n", time_str, message, (long)pthread_self());
+    fprintf(file, "[%s] %s  --  Connection ID: %ld\n", time_str, message, pthread_self());
+    printf("[%s] %s  --  Connection ID: %ld\n", time_str, message, pthread_self());
     fclose(file);
 }
 
@@ -245,10 +245,10 @@ size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, c
     struct pollfd fds[2];
     fds[0].fd = client_socket;
     fds[0].events = POLLIN;
-    // fds[1].fd = shutdown_requested_fd;
-    // fds[1].events = POLLIN;
+    fds[1].fd = shutdown_pipe[0];
+    fds[1].events = POLLIN;
 
-    int activity = poll(fds, 1, timeout);
+    int activity = poll(fds, 2, timeout);
     if (activity < 0) {
         perror("poll");
         return -1;  // Handle error and exit the loop
@@ -267,7 +267,6 @@ size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, c
     }
     
     if (fds[1].revents & POLLIN) {
-        // Read from the eventfd to clear the event
         return -1;
     }
 
@@ -288,7 +287,7 @@ void get_handler(Connection_attr* restrict attr, const char* restrict path){
         return;
     }
     char header[1024];
-    snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", (long)st.st_size);
+    snprintf(header, sizeof(header), "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n", st.st_size);
     send(attr->client_socket, header, strlen(header), 0);
 
     size_t total_sent = 0;
@@ -377,9 +376,6 @@ int handle_request_and_headers(Connection_attr* attr, char* restrict method, cha
         }else if((strncmp(attr->token, "POST", 4) == 0)){
             sscanf(attr->token, "%s %s %s", method, path+6, protocol);
             logger(attr->token);
-            if (strncmp(path+7, "index.html", 10) == 0) {
-                memcpy(method, "Forbidden", 10);
-            }
         }
     }
     return 1;
@@ -418,7 +414,7 @@ void *connection_handler(void *arg){
     char method[10], protocol[10];
     char path[1024] = "public";
     short req_count = 0;
-    attr->timeout = calculate_timeout()*1000;
+    attr->timeout = 5000;
     // attr->tv.tv_sec = 5;
     // attr->tv.tv_usec = 0;
     // setsockopt(attr->client_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&(attr->tv), sizeof(attr->tv));
@@ -457,6 +453,11 @@ void *connection_handler(void *arg){
                 send(attr->client_socket, "HTTP/1.1 408 OK\r\n\r\n", 19, 0);
                 break;
             }
+        }else if(strncmp(method, "Forbidden", 9) == 0){
+            send(attr->client_socket, "HTTP/1.1 403 Forbidden\r\n\r\n", 26, 0);
+            ret = handle_body(attr, path, false);
+            if(ret == -1 || errno == EWOULDBLOCK)
+                break;
         }else {
             handle_invalid_request(attr->client_socket);
             ret = handle_body(attr, path, false);
