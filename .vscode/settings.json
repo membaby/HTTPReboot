@@ -9,6 +9,7 @@
         "*.tcc": "c",
         "cerrno": "c",
         "system_error": "c",
-        "core": "c"
+        "core": "c",
+        "poll.h": "c"
     }
 }

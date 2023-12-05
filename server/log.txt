@@ -9,3 +9,26 @@
 [2023-12-05 05:39:50] GET /favicon.ico HTTP/1.1  --  Connection ID: 99239488
 [2023-12-05 05:39:50] Active Connections: 1 (Connection Closed)  --  Connection ID: 99239488
 [2023-12-05 05:39:55] Active Connections: 0 (Connection Closed)  --  Connection ID: 90846784
+[2023-12-05 06:46:45] Listening on port 8080...  --  Connection ID: 139678669297472
+[2023-12-05 06:46:57] New Connection Incoming  --  Connection ID: 139678669297472
+[2023-12-05 06:46:57] Active Connections: 1 (New Connection)  --  Connection ID: 139678669293120
+[2023-12-05 06:46:58] GET / HTTP/1.1  --  Connection ID: 139678669293120
+[2023-12-05 06:46:58] GET /embo.png HTTP/1.1  --  Connection ID: 139678669293120
+[2023-12-05 06:46:58] New Connection Incoming  --  Connection ID: 139678669297472
+[2023-12-05 06:46:58] Active Connections: 2 (New Connection)  --  Connection ID: 139678660900416
+[2023-12-05 06:46:58] GET /heshek.png HTTP/1.1  --  Connection ID: 139678660900416
+[2023-12-05 06:46:58] GET /favicon.ico HTTP/1.1  --  Connection ID: 139678660900416
+[2023-12-05 06:46:58] Active Connections: 1 (Connection Closed)  --  Connection ID: 139678660900416
+[2023-12-05 06:47:02] Active Connections: 0 (Connection Closed)  --  Connection ID: 139678669293120
+[2023-12-05 19:25:02] Listening on port 8080...  --  Connection ID: 139664632903488
+[2023-12-05 19:25:46] New Connection Incoming  --  Connection ID: 139664632903488
+[2023-12-05 19:25:46] Active Connections: 1 (New Connection)  --  Connection ID: 139664632899136
+[2023-12-05 19:25:46] Active Connections: 0 (Connection Closed)  --  Connection ID: 139664632899136
+[2023-12-05 19:27:07] New Connection Incoming  --  Connection ID: 139664632903488
+[2023-12-05 19:27:07] Active Connections: 1 (New Connection)  --  Connection ID: 139664632899136
+[2023-12-05 19:27:07] POST /file.txt HTTP/1.1  --  Connection ID: 139664632899136
+[2023-12-05 19:27:07] Active Connections: 0 (Connection Closed)  --  Connection ID: 139664632899136
+[2023-12-05 19:32:47] New Connection Incoming  --  Connection ID: 139664632903488
+[2023-12-05 19:32:47] Active Connections: 1 (New Connection)  --  Connection ID: 139664632899136
+[2023-12-05 19:32:47] POST /file.txt HTTP/1.1  --  Connection ID: 139664632899136
+[2023-12-05 19:32:47] Active Connections: 0 (Connection Closed)  --  Connection ID: 139664632899136
