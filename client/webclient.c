@@ -161,7 +161,7 @@ void handle_post_request(int sockfd, const char *path) {
         return;
     }
     struct stat st;
-    if (stat(path, &st) != 0) {
+    if (stat(filePath, &st) != 0) {
         perror("Error opening file");
         return;
     }
