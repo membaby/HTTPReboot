@@ -277,7 +277,7 @@ size_t read_next_block(char* restrict buffer, char** rest, const int rest_len, c
 void get_handler(Connection_attr* restrict attr, const char* restrict path){
     FILE *file = fopen(path, "rb"); // opens file in binary mode to avoid problems with text files
     if (file == NULL) {
-        send(attr->client_socket, "HTTP/1.1 404 Not Found\r\n\r\n", 26, 0);
+        send(attr->client_socket, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n", 45, 0);
         return;
     }
     // Read file content
@@ -451,7 +451,6 @@ void *connection_handler(void *arg){
                 send(attr->client_socket, "HTTP/1.1 200 OK\r\n\r\n", 19, 0);
             else{
                 send(attr->client_socket, "HTTP/1.1 408 OK\r\n\r\n", 19, 0);
-                break;
             }
         }else if(strncmp(method, "Forbidden", 9) == 0){
             send(attr->client_socket, "HTTP/1.1 403 Forbidden\r\n\r\n", 26, 0);
