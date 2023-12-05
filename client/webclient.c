@@ -72,7 +72,7 @@ void process_commands(int sockfd) {
 }
 
 char* getContentLength(int sockfd, int* remainingBodyLength) {
-    char headerBuffer[BUFFER_SIZE];
+    char headerBuffer[BUFFER_SIZE] = {0};
     char* endOfHeaders;
     int totalBytesRead = 0;
     int contentLength = 0;
@@ -108,7 +108,7 @@ char* getContentLength(int sockfd, int* remainingBodyLength) {
 void handle_get_request(int sockfd, const char *path) {
     char buffer[BUFFER_SIZE];
     char host[] = "localhost";
-    snprintf(buffer, sizeof(buffer), "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", path, host);
+    snprintf(buffer, sizeof(buffer), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n", path, host);
 
     // Send the GET request
     int n = send(sockfd, buffer, strlen(buffer), 0);
@@ -171,7 +171,7 @@ void handle_post_request(int sockfd, const char *path) {
              "Content-Type: %s\r\n"
              "Content-Length: %ld\r\n"
              "\r\n",
-             path, host, content_type, st.st_size);
+             path, host, content_type, (long)st.st_size);
     if (send(sockfd, buffer, strlen(buffer), 0) < 0) {
         perror("Error writing to socket");
         return;
