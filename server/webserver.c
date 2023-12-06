@@ -330,7 +330,8 @@ size_t handle_body(Connection_attr* attr, const char* restrict path, const bool 
     const size_t body_left = (curr_read<attr->body_length)?(min(attr->body_length-total_read, curr_read)):attr->body_length; 
     attr->rest_len = curr_read-body_left;
     memmove(attr->buffer, (attr->buffer)+body_left, attr->rest_len);
-    memset((attr->buffer)+(curr_read-body_left), 0, attr->rest_len);
+    *((attr->buffer)+(curr_read-body_left)) = '\0'; //hopefully works; update: works fine strstr stops anyway at first null char
+    // memset((attr->buffer)+(curr_read-body_left), 0, attr->rest_len);
     // attr->rest = (char*)((attr->buffer)+body_left);
     attr->valread = attr->rest_len;
 

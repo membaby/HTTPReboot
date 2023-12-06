@@ -33,3 +33,15 @@
 [2023-12-05 19:32:47] POST /file.txt HTTP/1.1  --  Connection ID: 139664632899136
 [2023-12-05 19:32:47] Active Connections: 0 (Connection Closed)  --  Connection ID: 139664632899136
 [2023-12-05 22:15:07] Active Connections: 0 (Connection Closed)  --  Connection ID: 140415362758208
+[2023-12-06 04:42:39] Listening on port 8080...  --  Connection ID: 140608936253248
+[2023-12-06 04:42:57] New Connection Incoming  --  Connection ID: 140608936253248
+[2023-12-06 04:42:57] Active Connections: 1 (New Connection)  --  Connection ID: 140608936248896
+[2023-12-06 04:42:57] GET /index.html HTTP/1.1  --  Connection ID: 140608936248896
+[2023-12-06 04:42:57] POST /test.txt HTTP/1.1  --  Connection ID: 140608936248896
+[2023-12-06 04:42:57] Active Connections: 0 (Connection Closed)  --  Connection ID: 140608936248896
+[2023-12-06 04:45:20] Listening on port 8080...  --  Connection ID: 139661676332864
+[2023-12-06 04:45:27] New Connection Incoming  --  Connection ID: 139661676332864
+[2023-12-06 04:45:27] Active Connections: 1 (New Connection)  --  Connection ID: 139661676328512
+[2023-12-06 04:45:27] GET /index.html HTTP/1.1  --  Connection ID: 139661676328512
+[2023-12-06 04:45:27] POST /test.txt HTTP/1.1  --  Connection ID: 139661676328512
+[2023-12-06 04:45:27] Active Connections: 0 (Connection Closed)  --  Connection ID: 139661676328512
